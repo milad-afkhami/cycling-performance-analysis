@@ -1,0 +1,340 @@
+---
+title: "Application Report: Analysis of Rider Performance in a Cycling Manager Game"
+subtitle: "Application for M.Sc. Data Science --- Summer Semester 2026"
+author: "Milad Afkhamipour Sharabyani"
+date: "`r format(Sys.Date(), '%B %d, %Y')`"
+output:
+  pdf_document:
+    toc: true
+    toc_depth: 2
+    number_sections: true
+    fig_caption: true
+    latex_engine: xelatex
+    keep_tex: false
+    includes:
+      in_header: header.tex
+fontsize: 12pt
+geometry: margin=2.5cm
+linestretch: 1.3
+bibliography: references.bib
+csl: apa.csl
+link-citations: true
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(
+  echo = FALSE,
+  warning = FALSE,
+  message = FALSE,
+  fig.pos = "H",
+  fig.width = 7,
+  fig.height = 4.5,
+  out.width = "100%"
+)
+
+library(tidyverse)
+library(kableExtra)
+library(car)
+library(dunn.test)
+library(effectsize)
+library(ggpubr)
+
+cycling <- read.table("cycling.txt", header = TRUE, quote = "\"")
+cycling$rider_class <- factor(cycling$rider_class,
+  levels = c("All Rounder", "Climber", "Sprinter", "Unclassed"))
+cycling$stage_class <- factor(cycling$stage_class,
+  levels = c("flat", "hills", "mount"))
+```
+
+\newpage
+
+# Introduction
+
+This report examines a dataset from a cycling manager game in order to address two research questions:
+
+1. **RQ1:** Do rider classes differ significantly in overall performance as measured by points scored?
+2. **RQ2:** Does the performance difference between rider classes depend on the type of stage (flat, hills, or mountain)?
+
+The analysis finds statistically significant performance differences across all four rider classes. More importantly, these differences are strongly shaped by terrain. Sprinters perform well on flat stages but earn almost no points on mountainous terrain, while All Rounders and Climbers reach their highest scores on mountain stages. Unclassed riders score low regardless of the stage type.
+
+The report is organized as follows. Section 2 describes the dataset. Section 3 presents the statistical methods used, along with their mathematical definitions. Section 4 reports the results of both descriptive and inferential analyses. Section 5 discusses the main findings, their implications, the limitations of the study, and possible directions for future work.
+
+# Data Description
+
+The dataset was provided by the Faculty of Statistics at TU Dortmund University. It contains `r format(nrow(cycling), big.mark = ",")` observations and `r ncol(cycling)` variables. Each row records the performance of a single rider on a single stage of the cycling manager game.
+
+```{r variable-table}
+var_table <- data.frame(
+  Variable = c("\\texttt{all\\_riders}", "\\texttt{rider\\_class}",
+               "\\texttt{stage}", "\\texttt{points}", "\\texttt{stage\\_class}"),
+  Description = c("Rider name", "Rider category",
+                   "Stage identifier", "Performance score", "Terrain type"),
+  `Scale Level` = c("Nominal", "Nominal", "Ordinal", "Ratio", "Nominal"),
+  Values = c("184 unique riders",
+             "All Rounder, Climber, Sprinter, Unclassed",
+             "X1--X21 (X5, X13 absent)",
+             "0--304, integer",
+             "flat, hills, mount"),
+  check.names = FALSE
+)
+
+kable(var_table,
+      caption = "Overview of variables in the cycling dataset.",
+      booktabs = TRUE, format = "latex", escape = FALSE) %>%
+  kable_styling(latex_options = c("hold_position"), font_size = 10)
+```
+
+A few features of the dataset are worth noting. There are no missing values. Out of 21 possible stages, 19 appear in the data; stages X5 and X13 are absent, likely because they correspond to rest days. The group sizes are quite unbalanced: the Unclassed category includes 115 riders, while All Rounder has only 17. There is also substantial zero-inflation, with `r round(100 * sum(cycling$points == 0) / nrow(cycling), 1)`% of all point values being exactly zero. Points cannot be negative, and the distribution is strongly right-skewed in every rider class.
+
+All analyses were performed using R version `r paste(R.version$major, R.version$minor, sep = ".")` [@rcore2024] with the packages ggplot2 [@wickham2016], dunn.test [@dinno2024], kableExtra [@zhu2024], and car [@fox2019]. The complete source code and data are available at \url{https://github.com/milad-afkhami/cycling-performance-analysis}.
+
+# Statistical Methods
+
+This section describes all statistical methods applied in the analysis. Due to the heavy right skew, zero-inflation, and violations of normality and variance homogeneity (shown in Section 4), nonparametric methods are used throughout [@hollander2013].
+
+## Descriptive Statistics and Graphical Methods
+
+The **arithmetic mean** $\bar{x} = \frac{1}{n} \sum_{i=1}^{n} x_i$ provides a measure of central tendency, while the **median** $\tilde{x}$ offers a robust alternative for skewed distributions [@fahrmeir2016]. Dispersion is measured by the **standard deviation** $s = \sqrt{\frac{1}{n-1} \sum_{i=1}^{n} (x_i - \bar{x})^2}$ and the **interquartile range** $\text{IQR} = Q_3 - Q_1$. Given the heavy right skew and zero-inflation in this dataset, the median and IQR are preferred over the mean and standard deviation.
+
+The **boxplot** [@tukey1977] provides a visual summary: the box spans $Q_1$ to $Q_3$ with a line at the median; whiskers extend to the most extreme point within $1.5 \times \text{IQR}$; observations beyond are plotted as outliers. Grouped boxplots faceted by stage class allow simultaneous assessment of both research questions.
+
+## Assumption Checking
+
+The **Shapiro-Wilk test** [@shapiro1965] evaluates $H_0$: the data follow a normal distribution, via a test statistic $W$ based on the correlation between observed order statistics and expected normal values. **Levene's test** [@levene1960] evaluates $H_0$: population variances are equal across groups, computing an $F$-statistic on absolute deviations from group medians. When both assumptions are violated, nonparametric alternatives are warranted.
+
+## Kruskal-Wallis Test
+
+The **Kruskal-Wallis rank sum test** [@kruskal1952] is a nonparametric alternative to one-way ANOVA for comparing $k$ independent groups. All $N$ observations are pooled and ranked. The test statistic is
+
+$$H = \frac{12}{N(N+1)} \sum_{j=1}^{k} \frac{R_j^2}{n_j} - 3(N+1)$$
+
+where $N = \sum_{j=1}^{k} n_j$ is the total number of observations, $n_j$ is the size of group $j$, and $R_j = \sum_{i=1}^{n_j} r_{ij}$ is the sum of ranks assigned to observations in group $j$. Under the null hypothesis $H_0$ that all $k$ group distributions are identical, $H$ follows approximately a chi-squared distribution with $k - 1$ degrees of freedom. The alternative hypothesis $H_1$ states that at least two groups differ in their distributions.
+
+## Post-Hoc Testing and Multiple Comparisons
+
+When the Kruskal-Wallis test rejects $H_0$, **Dunn's test** [@dunn1964] identifies which groups differ by performing all $m = \binom{k}{2}$ pairwise rank-sum comparisons. To control the family-wise error rate, the **Bonferroni correction** [@bonferroni1936] adjusts the significance level to $\alpha_{\text{adj}} = \alpha / m$. For $k = 4$ groups, $m = 6$ pairwise comparisons are conducted.
+
+## Effect Size
+
+The **eta-squared** ($\eta^2_H$) effect size based on the Kruskal-Wallis $H$ statistic quantifies the magnitude of group differences [@tomczak2014]:
+$$\eta^2_H = \frac{H - k + 1}{N - k}$$
+Values of approximately 0.01, 0.06, and 0.14 indicate small, medium, and large effects, respectively.
+
+## Analysis Strategy
+
+All tests use a significance level of $\alpha = 0.05$. For RQ1, a single Kruskal-Wallis test with Dunn's post-hoc comparisons is applied to the full dataset. For RQ2, a **stratified analysis** is conducted: separate Kruskal-Wallis tests within each stage class (flat, hills, mount), with Bonferroni correction across the three strata ($\alpha_{\text{adj}} = 0.05 / 3 = 0.0167$). Significant strata are followed up with Dunn's post-hoc tests.
+
+# Results
+
+## Descriptive Analysis
+
+### Summary Statistics by Rider Class
+
+```{r summary-table}
+summary_table <- cycling %>%
+  group_by(rider_class) %>%
+  summarise(
+    n = n(),
+    Riders = n_distinct(all_riders),
+    Mean = round(mean(points), 2),
+    Median = median(points),
+    SD = round(sd(points), 2),
+    IQR = IQR(points),
+    Min = min(points),
+    Max = max(points),
+    .groups = "drop"
+  )
+
+kable(summary_table,
+      caption = "Summary statistics of performance points by rider class.",
+      booktabs = TRUE, format = "latex",
+      col.names = c("Rider Class", "n", "Riders", "Mean", "Median",
+                     "SD", "IQR", "Min", "Max")) %>%
+  kable_styling(latex_options = c("hold_position", "striped"), font_size = 10)
+```
+
+Table 1 shows a clear ordering among rider classes. All Rounders have the highest average performance (mean = `r round(mean(cycling$points[cycling$rider_class == "All Rounder"]), 2)`), followed by Climbers, then Sprinters, and finally Unclassed riders. In every group, there is a large gap between the mean and the median, which reflects the heavy right skew mentioned in Section 2. Both Sprinters and Unclassed riders have a median of zero, meaning that over half of their stage performances result in no points at all.
+
+### Mean Performance by Rider Class and Stage Class
+
+```{r cross-table}
+cross_means <- cycling %>%
+  group_by(rider_class, stage_class) %>%
+  summarise(Mean = round(mean(points), 2), .groups = "drop") %>%
+  pivot_wider(names_from = stage_class, values_from = Mean)
+
+kable(cross_means,
+      caption = "Mean performance points by rider class and stage class.",
+      booktabs = TRUE, format = "latex",
+      col.names = c("Rider Class", "Flat", "Hills", "Mountain")) %>%
+  kable_styling(latex_options = c("hold_position"), font_size = 10)
+```
+
+Table 2 shows a strong interaction between rider class and stage type. Sprinters achieve their best average score on flat stages (38.98) but drop to near-zero on mountain stages (2.04). All Rounders, on the other hand, score highest on mountain stages (67.42) and considerably less on flat terrain (15.44). Climbers follow a similar pattern favoring mountains, though the difference is less extreme. Unclassed riders remain low across all three terrain types.
+
+### Graphical Analysis
+
+```{r boxplots, fig.cap="Distribution of performance points by rider class, stratified by stage class. Boxes span the interquartile range (Q1--Q3); horizontal lines indicate the median; whiskers extend to 1.5$\\times$IQR; points beyond are outliers.", fig.height=4}
+ggplot(cycling, aes(x = rider_class, y = points, fill = rider_class)) +
+  geom_boxplot(outlier.size = 0.6, outlier.alpha = 0.4) +
+  facet_wrap(~stage_class, scales = "free_y",
+             labeller = labeller(stage_class = c(
+               "flat" = "Flat Stages",
+               "hills" = "Hill Stages",
+               "mount" = "Mountain Stages"))) +
+  scale_fill_brewer(palette = "Set2") +
+  labs(
+    x = "Rider Class",
+    y = "Points",
+    fill = "Rider Class"
+  ) +
+  theme_minimal(base_size = 11) +
+  theme(
+    axis.text.x = element_text(angle = 45, hjust = 1, size = 9),
+    legend.position = "bottom",
+    strip.text = element_text(face = "bold", size = 11),
+    panel.grid.minor = element_blank()
+  )
+```
+
+Figure 1 confirms these patterns visually. The distributions are right-skewed in all groups, with many high-scoring outliers. On flat stages, Sprinters show the widest spread and the highest median. On mountain stages, All Rounders clearly stand out. The Unclassed category shows very little variation across terrain types, which is consistent with a support-rider role where consistent but low scoring is expected.
+
+
+## Inferential Analysis
+
+### Assumption Checks
+
+```{r assumptions}
+# Shapiro-Wilk per group
+shapiro_results <- cycling %>%
+  group_by(rider_class) %>%
+  summarise(
+    W = shapiro.test(points)$statistic,
+    p_value = shapiro.test(points)$p.value,
+    .groups = "drop"
+  )
+
+shapiro_display <- shapiro_results %>%
+  mutate(
+    W = round(W, 4),
+    p_value = format.pval(p_value, digits = 2, eps = .Machine$double.eps)
+  )
+
+kable(shapiro_display,
+      caption = "Shapiro-Wilk normality test results by rider class.",
+      booktabs = TRUE, format = "latex",
+      col.names = c("Rider Class", "W", "p-value")) %>%
+  kable_styling(latex_options = c("hold_position"), font_size = 10)
+
+# Levene's test
+levene_result <- car::leveneTest(points ~ rider_class, data = cycling)
+```
+
+The Shapiro-Wilk test rejected normality for all four rider classes ($p < 0.001$ in each case; Table 3). Levene's test also rejected homogeneity of variance ($F(`r levene_result$Df[1]`, `r levene_result$Df[2]`) = `r round(levene_result[["F value"]][1], 2)`$, $p < 0.001$). Given these violations, nonparametric methods are warranted for all subsequent inferential analyses.
+
+### RQ1: Overall Differences Between Rider Classes
+
+```{r kw-overall}
+kw_overall <- kruskal.test(points ~ rider_class, data = cycling)
+H_val <- kw_overall$statistic
+k <- 4
+N_total <- nrow(cycling)
+eta_sq <- (H_val - k + 1) / (N_total - k)
+```
+
+A Kruskal-Wallis test showed a statistically significant difference in performance points across the four rider classes ($H(3) = `r round(H_val, 2)`$, $p < 0.001$; @kruskal1952). The corresponding effect size was $\eta^2_H = `r round(eta_sq, 4)`$, which indicates a `r ifelse(eta_sq >= 0.14, "large", ifelse(eta_sq >= 0.06, "medium", "small"))` effect [@tomczak2014].
+
+### Post-Hoc Pairwise Comparisons (Overall)
+
+```{r dunn-overall, results='hide'}
+dunn_overall <- dunn.test::dunn.test(
+  cycling$points,
+  cycling$rider_class,
+  method = "bonferroni",
+  table = FALSE,
+  list = TRUE
+)
+```
+
+```{r dunn-overall-table}
+dunn_df <- data.frame(
+  Comparison = dunn_overall$comparisons,
+  Z = round(dunn_overall$Z, 3),
+  P_adjusted = format.pval(dunn_overall$P.adjusted, digits = 3)
+)
+
+kable(dunn_df,
+      caption = "Dunn's post-hoc pairwise comparisons with Bonferroni correction (overall).",
+      booktabs = TRUE, format = "latex",
+      col.names = c("Comparison", "Z", "Adjusted p-value")) %>%
+  kable_styling(latex_options = c("hold_position"), font_size = 10)
+```
+
+The results of Dunn's post-hoc tests with Bonferroni correction are shown in Table 4 [@dunn1964; @bonferroni1936]. All six pairwise comparisons reached statistical significance at the corrected level. This means that every rider class differs from every other class in its performance distribution.
+
+### RQ2: Stratified Analysis by Stage Class
+
+```{r stratified-kw}
+strat_list <- list()
+for (sc in c("flat", "hills", "mount")) {
+  sub <- cycling[cycling$stage_class == sc, ]
+  kw <- kruskal.test(points ~ rider_class, data = sub)
+  eta <- (kw$statistic - k + 1) / (nrow(sub) - k)
+  strat_list[[sc]] <- data.frame(
+    `Stage Class` = sc,
+    H = round(kw$statistic, 2),
+    df = kw$parameter,
+    p_value = format.pval(kw$p.value, digits = 2, eps = .Machine$double.eps),
+    eta_sq = round(eta, 4),
+    Significant = ifelse(kw$p.value < 0.05/3, "Yes", "No"),
+    check.names = FALSE
+  )
+}
+strat_results <- bind_rows(strat_list)
+
+kable(strat_results,
+      caption = "Kruskal-Wallis tests within each stage class (Bonferroni-corrected $\\alpha = 0.0167$).",
+      booktabs = TRUE, format = "latex", escape = FALSE,
+      col.names = c("Stage Class", "H", "df", "p-value",
+                     "$\\eta^2_H$", "Significant")) %>%
+  kable_styling(latex_options = c("hold_position"), font_size = 10)
+```
+
+As shown in Table 5, the Kruskal-Wallis test is significant within each stage class at the Bonferroni-corrected level of $\alpha = 0.0167$. This confirms that rider class differences are present across all terrain types, not just in the overall data. The effect sizes do vary by terrain, with the largest effects appearing on mountain and flat stages where the specialization is most relevant.
+
+### Post-Hoc Comparisons Within Stage Classes
+
+```{r stratified-dunn, results='hide'}
+dunn_strat_list <- list()
+for (sc in c("flat", "hills", "mount")) {
+  sub <- cycling[cycling$stage_class == sc, ]
+  d <- dunn.test::dunn.test(sub$points, sub$rider_class,
+                             method = "bonferroni", table = FALSE, list = TRUE)
+  dunn_strat_list[[sc]] <- data.frame(
+    Stage = sc,
+    Comparison = d$comparisons,
+    Z = round(d$Z, 3),
+    P_adjusted = d$P.adjusted
+  )
+}
+dunn_strat_df <- bind_rows(dunn_strat_list)
+
+# Count significant comparisons per stage
+sig_counts <- dunn_strat_df %>%
+  group_by(Stage) %>%
+  summarise(n_sig = sum(P_adjusted < 0.05), n_total = n(), .groups = "drop")
+```
+
+Dunn's post-hoc tests with Bonferroni correction were also carried out within each stage class separately. On **flat stages**, `r sig_counts$n_sig[sig_counts$Stage == "flat"]` of the 6 pairwise comparisons were significant. All of these involved the Unclassed group, which differed from All Rounders, Climbers, and Sprinters. The three classified rider types, however, did not differ significantly from one another on flat terrain. On **hill stages**, `r sig_counts$n_sig[sig_counts$Stage == "hills"]` of 6 comparisons were significant, with All Rounders and Climbers forming one performance group and Sprinters and Unclassed riders forming another. On **mountain stages**, the pattern was very similar: `r sig_counts$n_sig[sig_counts$Stage == "mount"]` of 6 comparisons were significant, and the same two-cluster structure appeared. These results show that the relative performance ranking among rider classes changes considerably depending on terrain.
+
+# Summary of Findings
+
+This report analyzed rider performance in a cycling manager game dataset containing `r format(nrow(cycling), big.mark = ",")` observations across 184 riders and 19 stages.
+
+**RQ1:** The Kruskal-Wallis test found significant differences across all four rider classes ($p < 0.001$), and all six Dunn's post-hoc comparisons remained significant after Bonferroni correction. Average performance follows the order All Rounder > Climber > Sprinter > Unclassed, with a `r ifelse(eta_sq >= 0.14, "large", ifelse(eta_sq >= 0.06, "medium", "small"))` effect ($\eta^2_H = `r round(eta_sq, 4)`$).
+
+**RQ2:** The stratified analysis confirmed significant differences within all three stage classes. The key finding is that the pattern of differences depends on terrain. Sprinters perform best on flat stages (mean 38.98) but earn almost no points on mountains (mean 2.04), while All Rounders reach their peak on mountain stages (mean 67.42). This terrain-dependent shift in performance is the most notable result of the analysis.
+
+Overall, the rider classifications in this game appear to reflect meaningful performance specializations that align with real-world cycling. Sprinters excel on flat terrain, All Rounders maintain solid performance across stage types with particular strength in the mountains, and Unclassed riders score consistently low --- a pattern consistent with a domestique or support-rider role. From a practical standpoint, these findings suggest that team managers should select riders based on the expected terrain profile of a given race.
+
+# References
